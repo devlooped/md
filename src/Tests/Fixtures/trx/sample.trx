@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TestRun id="00000000-0000-0000-0000-000000000001" name="sample" runUser="user" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Results>
+    <UnitTestResult executionId="00000000-0000-0000-0000-000000000011" testId="00000000-0000-0000-0000-000000000021" testName="MyCompany.MyApp.Tests.UnitTests.Passes" computerName="PC" duration="00:00:00.0100000" startTime="2026-06-09T00:00:00.0000000Z" endTime="2026-06-09T00:00:00.0100000Z" outcome="Passed" />
+    <UnitTestResult executionId="00000000-0000-0000-0000-000000000012" testId="00000000-0000-0000-0000-000000000022" testName="MyCompany.MyApp.Tests.UnitTests.AlsoPasses" computerName="PC" duration="00:00:00.0100000" startTime="2026-06-09T00:00:00.0000000Z" endTime="2026-06-09T00:00:00.0100000Z" outcome="Passed" />
+    <UnitTestResult executionId="00000000-0000-0000-0000-000000000013" testId="00000000-0000-0000-0000-000000000023" testName="MyCompany.MyApp.Tests.UnitTests.Fails" computerName="PC" duration="00:00:00.0100000" startTime="2026-06-09T00:00:00.0000000Z" endTime="2026-06-09T00:00:00.0100000Z" outcome="Failed">
+      <Output>
+        <ErrorInfo>
+          <Message>Assert.True() Failure</Message>
+          <StackTrace>   at MyCompany.MyApp.Tests.UnitTests.Fails() in C:\Code\md\src\Tests\SampleTests.cs:line 10</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="00000000-0000-0000-0000-000000000014" testId="00000000-0000-0000-0000-000000000024" testName="MyCompany.MyApp.Tests.UnitTests.Skipped" computerName="PC" duration="00:00:00.0000000" startTime="2026-06-09T00:00:00.0000000Z" endTime="2026-06-09T00:00:00.0000000Z" outcome="NotExecuted" />
+  </Results>
+  <TestDefinitions>
+    <UnitTest name="MyCompany.MyApp.Tests.UnitTests.Passes" storage="c:\agent\_work\1\s\bin\MyCompany.MyApp.Tests.dll" id="00000000-0000-0000-0000-000000000021">
+      <TestMethod codeBase="c:\agent\_work\1\s\bin\MyCompany.MyApp.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MyCompany.MyApp.Tests.UnitTests" name="Passes" />
+    </UnitTest>
+    <UnitTest name="MyCompany.MyApp.Tests.UnitTests.AlsoPasses" storage="c:\agent\_work\1\s\bin\MyCompany.MyApp.Tests.dll" id="00000000-0000-0000-0000-000000000022">
+      <TestMethod codeBase="c:\agent\_work\1\s\bin\MyCompany.MyApp.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MyCompany.MyApp.Tests.UnitTests" name="AlsoPasses" />
+    </UnitTest>
+    <UnitTest name="MyCompany.MyApp.Tests.UnitTests.Fails" storage="c:\agent\_work\1\s\bin\MyCompany.MyApp.Tests.dll" id="00000000-0000-0000-0000-000000000023">
+      <TestMethod codeBase="c:\agent\_work\1\s\bin\MyCompany.MyApp.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MyCompany.MyApp.Tests.UnitTests" name="Fails" />
+    </UnitTest>
+    <UnitTest name="MyCompany.MyApp.Tests.UnitTests.Skipped" storage="c:\agent\_work\1\s\bin\MyCompany.MyApp.Tests.dll" id="00000000-0000-0000-0000-000000000024">
+      <TestMethod codeBase="c:\agent\_work\1\s\bin\MyCompany.MyApp.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MyCompany.MyApp.Tests.UnitTests" name="Skipped" />
+    </UnitTest>
+  </TestDefinitions>
+</TestRun>

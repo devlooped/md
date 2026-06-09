@@ -1,0 +1,44 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Devlooped</RootNamespace>
+    <AssemblyName>md</AssemblyName>
+    <NoWarn>CS9107</NoWarn>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <Description>Minimal markdown build/test output for AI consumption.</Description>
+
+    <PackageId>md</PackageId>
+    <ToolCommandName>md</ToolCommandName>
+    <PackAsTool>true</PackAsTool>
+    <PackageReadmeFile>readme.md</PackageReadmeFile>
+    <PackageTags>dotnet dotnet-tool</PackageTags>
+    <PackageLicenseExpression></PackageLicenseExpression>
+    <PackageLicenseFile>OSMFEULA.txt</PackageLicenseFile>
+
+    <RollForward>LatestMajor</RollForward>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CliWrap" Version="3.8.1" />
+    <PackageReference Include="Devlooped.Web" Version="1.3.0" />
+    <PackageReference Include="MSBuild.StructuredLogger" Version="2.2.317" />
+    <PackageReference Include="NuGetizer" Version="1.4.7">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="System.CommandLine" Version="2.0.0-rc.2.25502.107" />
+    <PackageReference Include="ThisAssembly.Project" Version="2.0.14" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Tests" />
+    <ProjectProperty Include="ToolCommandName" />
+    <ProjectProperty Include="PackageId" />
+    <ProjectProperty Include="PackageProjectUrl" />
+    <None Include="..\..\osmfeula.txt" Link="osmfeula.txt" Pack="true" PackagePath="OSMFEULA.txt" />
+    <None Include="icon.png" Pack="true" PackagePath="icon.png" />
+    <None Include="readme.md" Pack="true" PackagePath="readme.md" />
+  </ItemGroup>
+</Project>
