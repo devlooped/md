@@ -29,7 +29,7 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="System.CommandLine" Version="2.0.0-rc.2.25502.107" />
-    <PackageReference Include="ThisAssembly.Project" Version="2.0.14" PrivateAssets="all" />
+    <PackageReference Include="ThisAssembly.Project" Version="2.1.2" PrivateAssets="all" />
   </ItemGroup>
 
   <ItemGroup>
