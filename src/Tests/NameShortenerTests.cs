@@ -69,4 +69,27 @@ public class NameShortenerTests
         Assert.Equal("[2]Api.dll", groupB[0].WithIndex());
         Assert.Equal("[2]: Fabrikam.", shortener.FormatFooter(groupB));
     }
+
+    [Fact]
+    public void When_shortening_would_leave_suffix_without_dot_then_backs_off_to_leave_at_least_one_segment()
+    {
+        var shortener = new NameShortener();
+        // "MyApp.dll" + "MyApp.Tests.dll" common "MyApp." would yield "dll" (no dot) -> backoff to no prefix
+        var noShorten = shortener.ShortenMany(["MyApp.dll", "MyApp.Tests.dll"]);
+        Assert.Equal("MyApp.dll", noShorten[0].Display);
+        Assert.Equal("MyApp.Tests.dll", noShorten[1].Display);
+        Assert.Null(noShorten[0].Index);
+
+        // For FQNs, back off one segment so suffix retains a dot (e.g. "UnitTests.Foo" not "Foo")
+        var shortener2 = new NameShortener();
+        var names = shortener2.ShortenMany(
+        [
+            "MyCompany.MyApp.Tests.UnitTests.Fails",
+            "MyCompany.MyApp.Tests.UnitTests.AlsoFails",
+        ]);
+
+        Assert.Equal("[1]UnitTests.Fails", names[0].WithIndex());
+        Assert.Equal("[1]UnitTests.AlsoFails", names[1].WithIndex());
+        Assert.Equal("[1]: MyCompany.MyApp.Tests.", shortener2.FormatFooter(names));
+    }
 }

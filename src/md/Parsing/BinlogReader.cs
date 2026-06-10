@@ -11,6 +11,7 @@ static class BinlogReader
 
         var build = Serialization.Read(binlogPath);
         var outputs = new List<string>();
+        var combosByOutput = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
 
         build.VisitAllChildren<Project>(project =>
         {
@@ -30,13 +31,34 @@ static class BinlogReader
                         if (string.IsNullOrWhiteSpace(path))
                             return;
 
-                        outputs.Add(Path.GetFileName(path));
+                        var fileName = Path.GetFileName(path);
+                        outputs.Add(fileName);
+
+                        var combo = GetCombo(project);
+                        if (combo is not null)
+                        {
+                            if (!combosByOutput.TryGetValue(fileName, out var set))
+                            {
+                                set = new HashSet<string>(StringComparer.Ordinal);
+                                combosByOutput[fileName] = set;
+                            }
+                            set.Add(combo);
+                        }
                     });
                 }
             });
         });
 
-        return new BuildSuccessResult(outputs.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray());
+        var distinct = outputs.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray();
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? combos = null;
+        if (combosByOutput.Count > 0)
+        {
+            combos = combosByOutput.ToDictionary(
+                kv => kv.Key,
+                kv => (IReadOnlyList<string>)kv.Value.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray(),
+                StringComparer.OrdinalIgnoreCase);
+        }
+        return new BuildSuccessResult(distinct, combos);
     }
 
     public static BuildFailureResult? TryReadFailures(string binlogPath, string? baseDirectory = null)
@@ -46,26 +68,41 @@ static class BinlogReader
 
         baseDirectory ??= Directory.GetCurrentDirectory();
         var build = Serialization.Read(binlogPath);
-        var errorsByProject = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        var dataByProject = new Dictionary<string, (HashSet<string> Errors, HashSet<string> Combos)>(StringComparer.OrdinalIgnoreCase);
 
         build.VisitAllChildren<Error>(error =>
         {
             var project = FindProjectName(error) ?? "Build";
-            if (!errorsByProject.TryGetValue(project, out var errors))
+            if (!dataByProject.TryGetValue(project, out var data))
             {
-                errors = [];
-                errorsByProject[project] = errors;
+                data = (new HashSet<string>(StringComparer.Ordinal), new HashSet<string>(StringComparer.Ordinal));
+                dataByProject[project] = data;
             }
 
-            errors.Add(FormatError(error, baseDirectory));
+            data.Errors.Add(FormatError(error, baseDirectory));
+
+            // Find closest Project ancestor to extract TFM/RID combo for this error
+            var node = error.Parent as BaseNode;
+            Project? proj = null;
+            while (node is not null && proj is null)
+            {
+                if (node is Project p) proj = p;
+                node = node.Parent as BaseNode;
+            }
+            var combo = proj is not null ? GetCombo(proj) : null;
+            if (combo is not null)
+                data.Combos.Add(combo);
         });
 
-        if (errorsByProject.Count == 0)
+        if (dataByProject.Count == 0)
             return null;
 
-        var projects = errorsByProject
+        var projects = dataByProject
             .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
-            .Select(x => new BuildProjectFailure(x.Key, x.Value))
+            .Select(x => new BuildProjectFailure(
+                x.Key,
+                x.Value.Errors.OrderBy(e => e, StringComparer.OrdinalIgnoreCase).ToArray(),
+                x.Value.Combos.OrderBy(c => c, StringComparer.OrdinalIgnoreCase).ToArray()))
             .ToArray();
 
         return new BuildFailureResult(projects);
@@ -100,10 +137,38 @@ static class BinlogReader
 
         return $"{file}{line} {code}{text}".Trim();
     }
+
+    static string? GetCombo(Project project)
+    {
+        var tfm = project.TargetFramework?.Trim();
+        if (string.IsNullOrEmpty(tfm))
+            return null;
+
+        // Prefer RuntimeIdentifier (direct property or in GlobalProperties)
+        string? rid = project.GetType().GetProperty("RuntimeIdentifier")?.GetValue(project) as string;
+        if (string.IsNullOrWhiteSpace(rid))
+        {
+            try
+            {
+                if (project.GetType().GetProperty("GlobalProperties")?.GetValue(project) is System.Collections.IDictionary gp && gp.Contains("RuntimeIdentifier"))
+                    rid = gp["RuntimeIdentifier"]?.ToString();
+            }
+            catch { }
+        }
+        rid = rid?.Trim();
+        if (!string.IsNullOrEmpty(rid))
+            return $"{tfm}|{rid}";
+
+        var plat = project.Platform?.Trim();
+        if (!string.IsNullOrEmpty(plat) && !string.Equals(plat, "AnyCPU", StringComparison.OrdinalIgnoreCase))
+            return $"{tfm}|{plat}";
+
+        return tfm;
+    }
 }
 
-record BuildSuccessResult(IReadOnlyList<string> Outputs);
+record BuildSuccessResult(IReadOnlyList<string> Outputs, IReadOnlyDictionary<string, IReadOnlyList<string>>? Combinations = null);
 
 record BuildFailureResult(IReadOnlyList<BuildProjectFailure> Projects);
 
-record BuildProjectFailure(string ProjectName, IReadOnlyList<string> Errors);
+record BuildProjectFailure(string ProjectName, IReadOnlyList<string> Errors, IReadOnlyList<string> Combinations);

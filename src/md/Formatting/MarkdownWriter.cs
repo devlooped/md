@@ -4,51 +4,108 @@ namespace Devlooped.Formatting;
 
 static class MarkdownWriter
 {
-    public static void WriteBuildSuccess(IReadOnlyList<string> outputs)
-        => WriteBuildSuccess(Console.Out, outputs);
+    const char Tab = '\t';
 
-    public static void WriteBuildSuccess(TextWriter writer, IReadOnlyList<string> outputs)
-    {
-        var shortener = new NameShortener();
-        var names = shortener.ShortenMany(outputs);
-        var builder = new StringBuilder();
+    public static void WriteBuildSuccess(IReadOnlyList<string> outputs, IReadOnlyDictionary<string, IReadOnlyList<string>>? combinations = null)
+        => WriteBuild(outputs, combinations);
 
-        foreach (var name in names)
-            builder.AppendLine($"✅{name.WithIndex()}");
-
-        WriteFooter(builder, shortener, names);
-        writer.Write(builder);
-    }
+    public static void WriteBuildSuccess(TextWriter writer, IReadOnlyList<string> outputs, IReadOnlyDictionary<string, IReadOnlyList<string>>? combinations = null)
+        => WriteBuild(writer, outputs, combinations);
 
     public static void WriteBuildFailures(IReadOnlyList<BuildProjectErrors> projects)
-        => WriteBuildFailures(Console.Out, projects);
+        => WriteBuild([], null, projects);
 
     public static void WriteBuildFailures(TextWriter writer, IReadOnlyList<BuildProjectErrors> projects)
-    {
-        var shortener = new NameShortener();
-        var projectNames = shortener.ShortenMany(projects.Select(p => p.ProjectName).ToArray());
-        var builder = new StringBuilder();
-
-        for (var i = 0; i < projects.Count; i++)
-        {
-            builder.AppendLine($"❌{projectNames[i].WithIndex()}");
-
-            foreach (var error in projects[i].Errors)
-            {
-                builder.Append("> ");
-                builder.AppendLine(error);
-            }
-        }
-
-        WriteFooter(builder, shortener, projectNames);
-        writer.Write(builder);
-    }
+        => WriteBuild(writer, [], null, projects);
 
     public static void WriteBuildFallback()
         => WriteBuildFallback(Console.Out);
 
     public static void WriteBuildFallback(TextWriter writer)
         => writer.WriteLine("❌Build");
+
+    public static void WriteBuild(IReadOnlyList<string> outputs, IReadOnlyDictionary<string, IReadOnlyList<string>>? combinations = null, IReadOnlyList<BuildProjectErrors>? failures = null)
+        => WriteBuild(Console.Out, outputs, combinations, failures);
+
+    public static void WriteBuild(TextWriter writer, IReadOnlyList<string> outputs, IReadOnlyDictionary<string, IReadOnlyList<string>>? combinations = null, IReadOnlyList<BuildProjectErrors>? failures = null)
+    {
+        var shortener = new NameShortener();
+        var allNamesForShortening = outputs
+            .Concat(failures?.Select(p => p.ProjectName) ?? Enumerable.Empty<string>())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var shortened = shortener.ShortenMany(allNamesForShortening);
+
+        var shortMap = new Dictionary<string, ShortenedName>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < allNamesForShortening.Count; i++)
+        {
+            var name = allNamesForShortening[i];
+            if (!shortMap.ContainsKey(name))
+                shortMap[name] = shortened[i];
+        }
+
+        var builder = new StringBuilder();
+
+        // Write successes
+        for (var i = 0; i < outputs.Count; i++)
+        {
+            var orig = outputs[i];
+            var sn = shortMap.TryGetValue(orig, out var s) ? s : new ShortenedName(orig, null, null);
+            var line = sn.WithIndex();
+            if (combinations != null && combinations.TryGetValue(orig, out var combs) && combs.Count > 0)
+                line += $" ({string.Join(';', combs)})";
+            builder.AppendLine($"✅{line}");
+        }
+
+        // Write failures, applying shortening throughout (including to error file paths)
+        if (failures is { Count: > 0 })
+        {
+            if (outputs.Count > 0)
+                builder.AppendLine();
+
+            for (var i = 0; i < failures.Count; i++)
+            {
+                var proj = failures[i];
+                var sn = shortMap.TryGetValue(proj.ProjectName, out var s) ? s : new ShortenedName(proj.ProjectName, null, null);
+                var line = sn.WithIndex();
+                var combs = proj.Combinations;
+                if (combs is { Count: > 0 })
+                    line += $" ({string.Join(';', combs)})";
+                builder.AppendLine($"❌{line}");
+
+                foreach (var error in proj.Errors)
+                {
+                    var errLine = ShortenError(error, shortMap);
+                    builder.Append(Tab);
+                    builder.AppendLine(errLine);
+                }
+            }
+        }
+
+        WriteFooter(builder, shortener, shortened);
+        writer.Write(builder);
+    }
+
+    static string ShortenError(string error, IReadOnlyDictionary<string, ShortenedName> map)
+    {
+        if (string.IsNullOrEmpty(error) || map.Count == 0)
+            return error;
+
+        // Prefer longest (most specific) match first
+        foreach (var kv in map.OrderByDescending(kv => kv.Key.Length))
+        {
+            var full = kv.Key;
+            var sn = kv.Value;
+            if (sn.Index is null || string.IsNullOrEmpty(sn.Prefix))
+                continue;
+            if (error.StartsWith(full, StringComparison.OrdinalIgnoreCase))
+            {
+                return sn.Display + error[full.Length..];
+            }
+        }
+
+        return error;
+    }
 
     public static void WriteTestSuccess(IReadOnlyList<TestAssemblyResult> assemblies)
         => WriteTestSuccess(Console.Out, assemblies);
@@ -132,22 +189,23 @@ static class MarkdownWriter
         if (string.IsNullOrWhiteSpace(message) && string.IsNullOrWhiteSpace(stackTrace))
             return;
 
-        var language = stackTrace.Contains(".vb:line", StringComparison.Ordinal) ? "vb" : "csharp";
-        builder.AppendLine($"> ```{language}");
-
         if (!string.IsNullOrWhiteSpace(message))
         {
             foreach (var line in message.ReplaceLineEndings().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries))
-                builder.AppendLine($"> {line}");
+            {
+                builder.Append(Tab);
+                builder.AppendLine(line);
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(stackTrace))
         {
             foreach (var line in stackTrace.ReplaceLineEndings().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries))
-                builder.AppendLine($"> {line}");
+            {
+                builder.Append(Tab);
+                builder.AppendLine(line);
+            }
         }
-
-        builder.AppendLine("> ```");
     }
 
     static void WriteFooter(StringBuilder builder, NameShortener shortener, IReadOnlyList<ShortenedName> names)
@@ -161,7 +219,7 @@ static class MarkdownWriter
     }
 }
 
-record BuildProjectErrors(string ProjectName, IReadOnlyList<string> Errors);
+record BuildProjectErrors(string ProjectName, IReadOnlyList<string> Errors, IReadOnlyList<string>? Combinations = null);
 
 record TestAssemblyResult(string AssemblyName, int Passed, int Failed, int Skipped);
 

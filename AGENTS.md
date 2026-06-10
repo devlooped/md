@@ -32,11 +32,11 @@ The `md` tool wraps `dotnet build` / `dotnet test`, swallows verbose SDK output,
 - **CLI**: System.CommandLine with `build` and `test` subcommands
 - **Build**: injects `-bl:<temp.binlog>` if absent; parses via MSBuild.StructuredLogger `Serialization.Read`
 - **Build success**: `Project` → `GetTargetPath` (Succeeded) → `TargetOutputs` items → filenames
-- **Build failure**: `Error` nodes grouped by project; `❌[n]Project` + blockquoted errors (`file:line CODE: message`)
+- **Build failure**: `Error` nodes grouped by project; `❌[n]Project` + tab-indented errors (`file:line CODE: message`)
 - **Build fallback**: `❌Build` when non-zero exit and no parseable binlog output
 - **Test**: injects `--logger trx` + `--results-directory <temp>` if missing; TRX only (combined loggers allowed when trx present)
 - **Test success**: per-assembly counts with ✅/❌/⏩ (omit zero counts)
-- **Test failure**: summary lines + `❌[n]` shortened full test FQNs with fenced stack traces
+- **Test failure**: summary lines + `❌[n]` shortened full test FQNs with tab-indented stack traces (consistent tab prefix on each line)
 - **Test fallback**: `❌Tests` when non-zero exit and no parseable TRX output
 - **NameShortener**: shared prefix on full names → `[n]Suffix` lines + `[n]: Prefix.` footer
 - **Passthrough**: informational dotnet output replayed when no markdown is written; help forwarded before capture

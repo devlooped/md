@@ -47,7 +47,7 @@ dnx md -y test src/Tests/Tests.csproj --no-build
 
 ```
 ❌md
-> src/Api/Program.cs:12 CS1002: ; expected
+	src/Api/Program.cs:12 CS1002: ; expected
 ```
 
 **Build fallback** (non-zero exit, no parseable binlog output):
@@ -71,12 +71,11 @@ dnx md -y test src/Tests/Tests.csproj --no-build
 [1]Tests.dll ✅10 ❌2 ⏩1
 
 ❌[2]Fails
+	Assert.True() Failure
+	   at MyCompany.MyApp.Tests.UnitTests.Fails() in src/Tests/SampleTests.cs:line 10
 ❌[2]AlsoFails
-
-> ```csharp
-> Assert.True() Failure
->    at MyCompany.MyApp.Tests.UnitTests.Fails() in src/Tests/SampleTests.cs:line 10
-> ```
+	Expected 1
+	   at MyCompany.MyApp.Tests.UnitTests.AlsoFails() in src/Tests/SampleTests.cs:line 11
 
 [1]: MyCompany.MyApp.
 [2]: MyCompany.MyApp.Tests.

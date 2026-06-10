@@ -1,6 +1,6 @@
+using System.Text;
 using CliWrap.Buffered;
 using Devlooped;
-using System.Text;
 
 namespace Tests;
 

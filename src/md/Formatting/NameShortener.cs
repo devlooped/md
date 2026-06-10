@@ -56,6 +56,17 @@ sealed class NameShortener
         if (lastDot >= 0)
             prefix = prefix[..(lastDot + 1)];
 
+        // Never remove all dot-separated segments: ensure at least one '.' remains in every rendered suffix.
+        // Back off to previous dot if any suffix after prefix would have no dot (e.g. avoid turning "MyApp.dll" into "[1]dll").
+        while (prefix.Length > 0 && names.Any(name => !name[prefix.Length..].Contains('.')))
+        {
+            var prev = prefix[..^1].LastIndexOf('.');
+            if (prev >= 0)
+                prefix = prefix[..(prev + 1)];
+            else
+                prefix = string.Empty;
+        }
+
         return prefix;
     }
 
