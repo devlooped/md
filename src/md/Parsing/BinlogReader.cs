@@ -10,6 +10,13 @@ static class BinlogReader
             return null;
 
         var build = Serialization.Read(binlogPath);
+
+        // Prefer SolutionDir recorded in the binlog (set when building from a .sln).
+        // Fall back to the process current directory so that output paths are always relative
+        // (shorter, and what an LLM expects when it later wants to open files).
+        var baseDirectory = GetSolutionDirFromBinlog(build) ?? Directory.GetCurrentDirectory();
+        baseDirectory = baseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
         var outputs = new List<string>();
         var combosByOutput = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
 
@@ -31,16 +38,29 @@ static class BinlogReader
                         if (string.IsNullOrWhiteSpace(path))
                             return;
 
-                        var fileName = Path.GetFileName(path);
-                        outputs.Add(fileName);
+                        // Normalize separators.
+                        path = path.Replace('\\', '/');
+
+                        // Make relative to SolutionDir (preferred) or cwd. This is the key
+                        // improvement requested: success paths in the markdown should not be
+                        // absolute machine-specific paths.
+                        if (Path.IsPathRooted(path) &&
+                            path.StartsWith(baseDirectory, StringComparison.OrdinalIgnoreCase))
+                        {
+                            path = path.Substring(baseDirectory.Length)
+                                       .TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                                       .Replace('\\', '/');
+                        }
+
+                        outputs.Add(path);
 
                         var combo = GetCombo(project);
                         if (combo is not null)
                         {
-                            if (!combosByOutput.TryGetValue(fileName, out var set))
+                            if (!combosByOutput.TryGetValue(path, out var set))
                             {
                                 set = new HashSet<string>(StringComparer.Ordinal);
-                                combosByOutput[fileName] = set;
+                                combosByOutput[path] = set;
                             }
                             set.Add(combo);
                         }
@@ -59,6 +79,36 @@ static class BinlogReader
                 StringComparer.OrdinalIgnoreCase);
         }
         return new BuildSuccessResult(distinct, combos);
+    }
+
+    static string? GetSolutionDirFromBinlog(Build build)
+    {
+        string? solutionDir = null;
+
+        build.VisitAllChildren<Project>(project =>
+        {
+            if (solutionDir is not null)
+                return;
+
+            // Some versions of the StructuredLogger model expose SolutionDir directly.
+            var sd = project.GetType().GetProperty("SolutionDir")?.GetValue(project) as string;
+            if (!string.IsNullOrWhiteSpace(sd))
+            {
+                solutionDir = sd;
+                return;
+            }
+
+            // Most common: SolutionDir lives in GlobalProperties when the build was driven by a .sln.
+            if (project.GetType().GetProperty("GlobalProperties")?.GetValue(project) is System.Collections.IDictionary gp &&
+                gp.Contains("SolutionDir"))
+            {
+                var val = gp["SolutionDir"]?.ToString();
+                if (!string.IsNullOrWhiteSpace(val))
+                    solutionDir = val;
+            }
+        });
+
+        return solutionDir;
     }
 
     public static BuildFailureResult? TryReadFailures(string binlogPath, string? baseDirectory = null)
@@ -128,8 +178,12 @@ static class BinlogReader
     static string FormatError(Error error, string baseDirectory)
     {
         var file = error.File;
-        if (!string.IsNullOrWhiteSpace(file) && Path.IsPathRooted(file) && file.StartsWith(baseDirectory, StringComparison.OrdinalIgnoreCase))
-            file = file[baseDirectory.Length..].TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (!string.IsNullOrWhiteSpace(file))
+        {
+            if (Path.IsPathRooted(file) && file.StartsWith(baseDirectory, StringComparison.OrdinalIgnoreCase))
+                file = file[baseDirectory.Length..].TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            file = file.Replace('\\', '/');
+        }
 
         var line = error.LineNumber > 0 ? $":{error.LineNumber}" : string.Empty;
         var code = string.IsNullOrWhiteSpace(error.Code) ? string.Empty : $"{error.Code}: ";
@@ -167,6 +221,10 @@ static class BinlogReader
     }
 }
 
+// Outputs contain the TargetOutputs paths from the binlog, relativized against SolutionDir
+// (if present in the binlog) or the current directory at read time. Separators are normalized to '/'.
+// This keeps success markdown short and independent of the machine's absolute paths.
+// Combinations (when present) are keyed by the same relative paths.
 record BuildSuccessResult(IReadOnlyList<string> Outputs, IReadOnlyDictionary<string, IReadOnlyList<string>>? Combinations = null);
 
 record BuildFailureResult(IReadOnlyList<BuildProjectFailure> Projects);

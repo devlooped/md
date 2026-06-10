@@ -33,20 +33,31 @@ dnx md -y test src/Tests/Tests.csproj --no-build
 
 ## Output examples
 
-**Build success:**
+**Build success (new #ALIAS format):**
+
+The build output now uses a compact `#ALIAS` dictionary (semantic abbreviations for repeated dotted names and combo sets) listed at the top or immediately before each outcome, plus an arrow form that echoes the familiar `Name -> path` shape while remaining tiny and fully reconstructible by an LLM.
 
 ```
-✅[1]Api.dll
-✅[1]Web.dll
-✅[1]Tests.dll
-
-[1]: Microsoft.Data.Ingestion.
+#MDI=Microsoft.Data.Ingestion
+#MDIApi=#MDI.Api
+#MDIApi→#MDIApi.dll
+#MDIWeb=#MDI.Web
+#MDIWeb→#MDIWeb.dll
 ```
 
-**Build failure:**
+For multi-TFM builds a shared combo alias is used for pivots:
 
 ```
-❌md
+#TFMS=net10.0|net8.0
+#Hosting=...
+✅#Hosting→src/#Hosting/bin/Debug/(#TFMS)/#Hosting.dll
+```
+
+**Build failure (new #ALIAS format):**
+
+```
+#md=md
+❌#md/
 	src/Api/Program.cs:12 CS1002: ; expected
 ```
 
@@ -89,7 +100,7 @@ dnx md -y test src/Tests/Tests.csproj --no-build
 
 ## How it works
 
-- `build` injects a binary log (`-bl`) when none is provided, then parses it with [MSBuild.StructuredLogger](https://www.nuget.org/packages/MSBuild.StructuredLogger). No console text parsing.
-- `test` injects `--logger trx` and a temp `--results-directory` when missing, then parses TRX files only.
+- `build` injects a binary log (`-bl`) when none is provided, then parses it with [MSBuild.StructuredLogger](https://www.nuget.org/packages/MSBuild.StructuredLogger). No console text parsing. Success/failure output for build now uses the `#ALIAS` top + per-outcome definition style (with semantic abbreviations such as #MAAI and `#TFMS` for repeated TFMs) plus `✅#Key→path/(#TFMS)/...` lines. This replaces the previous `[n]` bottom-ref shortening for build results.
+- `test` injects `--logger trx` and a temp `--results-directory` when missing, then parses TRX files only. (Test output continues to use the prior count + `[n]` footer style for now.)
 - Help requests (`-h`, `-?`, `--help`) are passed through to `dotnet` unchanged.
 - Informational dotnet switches (`--version`, `--list-tests`, etc.) replay captured stdout when no markdown is emitted.

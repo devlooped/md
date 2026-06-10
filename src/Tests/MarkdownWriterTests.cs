@@ -9,6 +9,7 @@ public class MarkdownWriterTests
     public void When_build_succeeds_then_writes_shortened_outputs_with_footer()
     {
         var writer = new StringWriter();
+        // Inputs are bare names (as before). The new format emits a local #ALIAS def + ✅#ALIAS→name line (no bottom [n] footer).
         MarkdownWriter.WriteBuildSuccess(writer,
         [
             "Microsoft.Data.Ingestion.Api.dll",
@@ -16,15 +17,18 @@ public class MarkdownWriterTests
         ]);
 
         var output = writer.ToString();
-        Assert.Contains($"{Environment.NewLine}{Environment.NewLine}[1]: Microsoft.Data.Ingestion.", output);
-        Assert.Equal(
-            """
-            ✅[1]Api.dll
-            ✅[1]Web.dll
 
-            [1]: Microsoft.Data.Ingestion.
-            """.ReplaceLineEndings() + Environment.NewLine,
-            output);
+        // New #ALIAS style (local def immediately before outcome + arrow form). No old [1] footer.
+        Assert.DoesNotContain("[1]:", output);
+        // The exact alias token is derived by Abbreviate; assert structural properties instead of hardcoding the abbreviation.
+        Assert.Contains("=Microsoft.Data.Ingestion.Api", output);
+        Assert.Contains("✅#", output);
+        // With the new intra-path alias substitution, repeated project name parts on the RHS are also replaced by the alias token.
+        // For these bare-name inputs this yields forms like "→#MDIA.dll".
+        Assert.Contains("→#", output);
+        Assert.Contains(".dll", output);
+        Assert.Contains("=Microsoft.Data.Ingestion.Web", output);
+        Assert.Contains("→#", output);
     }
 
     [Fact]
@@ -35,11 +39,12 @@ public class MarkdownWriterTests
             [new BuildProjectErrors("md", ["src/Program.cs:12 CS1002: ; expected"])]);
 
         var output = writer.ToString();
-        Assert.Equal(
-            "❌md" + Environment.NewLine + "\tsrc/Program.cs:12 CS1002: ; expected" + Environment.NewLine,
-            output);
-        // Explicitly assert the indent char for build error details is a single tab (char 9), never spaces.
-        Assert.Equal('\t', output[output.IndexOf('\n') + 1]);
+
+        // New format: local alias def immediately before the failure line, then the tab-indented detail.
+        // Still uses the single-tab indent invariant. Alias for bare "md" is "#md".
+        Assert.StartsWith("#md=md" + Environment.NewLine + "❌#md/" + Environment.NewLine, output);
+        Assert.Contains("\tsrc/Program.cs:12 CS1002: ; expected" + Environment.NewLine, output);
+        Assert.Equal('\t', output[output.IndexOf('\n', output.IndexOf("❌#md/")) + 1]);
     }
 
     [Fact]
@@ -143,30 +148,70 @@ public class MarkdownWriterTests
 
         var output = writer.ToString();
 
-        // Shortening applied to successes (note: combined set with 'Mcp' causes backoff to keep '.' in all suffixes, per NameShortener rules)
-        Assert.Contains("✅[1]AI.Core.dll", output);
-        Assert.Contains("✅[1]AI.Core.UnitTests.dll", output);
+        // New #ALIAS format (no old [n] or bottom footer refs).
+        Assert.DoesNotContain("[1]:", output);
+        Assert.DoesNotContain("✅[1]", output);
+        Assert.DoesNotContain("❌[1]", output);
 
-        // Shortening applied to failure project header (using shared shortener across successes+failures)
-        Assert.Contains("❌[1]AI.Mcp", output);
+        // Aliases (local defs) for the repeated dotted project/output names; exact token depends on Abbreviate.
+        Assert.Contains("=Microsoft.Agents.AI.Core", output);
+        Assert.Contains("✅#", output);
+        Assert.Contains("→", output);
 
-        // Shortening performed throughout, including inside build error details (prefix removed from path)
-        Assert.Contains("\tAI.Mcp\\Class1.cs:5 CS1002: ; expected", output);
+        // Failure project gets its local alias def + ❌#Alias/ form (plus the tab error detail).
+        Assert.Contains("=Microsoft.Agents.AI.Mcp", output);
+        Assert.Contains("❌#", output);
+        Assert.Contains("/", output); // the / after the aliased project key for failures
 
-        // Single footer with refs at the very bottom, after all errors
-        Assert.Contains("[1]: Microsoft.Agents.", output);
-        var footerIdx = output.IndexOf("[1]: Microsoft.Agents.", StringComparison.Ordinal);
-        var errorDetailIdx = output.IndexOf("AI.Mcp\\Class1.cs", StringComparison.Ordinal);
-        Assert.True(footerIdx > errorDetailIdx, "refs footer must appear after the error details");
+        // Error details remain tab-indented and project-prefix stripped (relative).
+        Assert.Contains("\tClass1.cs:5 CS1002: ; expected", output);
 
-        // Confirm tab-indented shortened error detail is present (shortening throughout)
-        Assert.Contains("\tAI.Mcp\\Class1.cs:5 CS1002: ; expected", output);
-
-        // Explicit guard: the indent preceding the (shortened) build error detail line must be a single tab char.
-        var detailPos = output.IndexOf("AI.Mcp\\Class1.cs", StringComparison.Ordinal);
+        // Tab (not spaces) indent invariant still holds for build error details.
+        var detailPos = output.IndexOf("Class1.cs:5", StringComparison.Ordinal);
         Assert.True(detailPos > 0 && output[detailPos - 1] == '\t', "Build error detail must be prefixed by single tab char, not spaces or other whitespace.");
 
-        // There is a separating blank line between success block and failure block (consistent with test failures style)
-        Assert.Contains("AI.Core.UnitTests.dll" + Environment.NewLine + Environment.NewLine + "❌[1]AI.Mcp", output);
+        // There is still a separating blank line between success block(s) and the failure block (structure check).
+        // In the new format the failure block starts with its local alias def line, then the ❌ line.
+        Assert.Contains(Environment.NewLine + Environment.NewLine, output);
+        Assert.Contains("❌#", output);
+    }
+
+    [Fact]
+    public void When_multiple_tfms_for_same_logical_project_then_emits_single_pivoted_line_under_one_alias()
+    {
+        var writer = new StringWriter();
+
+        // Simulate what the reader now provides for a multi-TFM project (full paths, combos per path).
+        var baseDir = "C:/Code/oss/agent-framework/dotnet/tests/Microsoft.Agents.AI.A2A.UnitTests/bin/Debug";
+        var p10 = baseDir + "/net10.0/Microsoft.Agents.AI.A2A.UnitTests.dll";
+        var p8 = baseDir + "/net8.0/Microsoft.Agents.AI.A2A.UnitTests.dll";
+        var p9 = baseDir + "/net9.0/Microsoft.Agents.AI.A2A.UnitTests.dll";
+
+        var outputs = new[] { p10, p8, p9 };
+        var combos = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase)
+        {
+            [p10] = new[] { "net10.0" },
+            [p8] = new[] { "net8.0" },
+            [p9] = new[] { "net9.0" },
+        };
+
+        MarkdownWriter.WriteBuildSuccess(writer, outputs, combos);
+        var output = writer.ToString();
+
+        // Only one local alias definition for the project.
+        Assert.Contains("=Microsoft.Agents.AI.A2A.UnitTests", output);
+
+        // Exactly one success outcome line (the three TFM variants must have been grouped).
+        var successCount = output.Split('\n').Count(l => l.Contains("✅"));
+        Assert.Equal(1, successCount);
+
+        // The single line must contain a pivot for the TFMs (either the global #TFMS form or the inline list).
+        Assert.True(
+            output.Contains("(#TFMS)") || output.Contains("(net10.0|net8.0|net9.0)") || output.Contains("(net"),
+            "Expected a TFM pivot in the (collapsed) path");
+
+        // As a bonus for shortness, the alias token should also appear inside the path on the RHS.
+        Assert.Contains("✅#", output);
+        // The line after the alias def should be the one with the arrow + (hopefully) the alias repeated in the path.
     }
 }

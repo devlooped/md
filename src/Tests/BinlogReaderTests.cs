@@ -13,7 +13,10 @@ public class BinlogReaderTests
         var result = BinlogReader.TryReadSuccess(SuccessFixture);
 
         Assert.NotNull(result);
-        Assert.Equal(["md.dll"], result.Outputs);
+        // Reader now returns full (/-normalized) TargetOutputs paths to enable aliasing + pivots in the writer.
+        // The fixture contains a single output whose leaf is md.dll.
+        Assert.Single(result.Outputs);
+        Assert.EndsWith("md.dll", result.Outputs[0], StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -29,66 +29,351 @@ static class MarkdownWriter
 
     public static void WriteBuild(TextWriter writer, IReadOnlyList<string> outputs, IReadOnlyDictionary<string, IReadOnlyList<string>>? combinations = null, IReadOnlyList<BuildProjectErrors>? failures = null)
     {
-        var shortener = new NameShortener();
-        var allNamesForShortening = outputs
-            .Concat(failures?.Select(p => p.ProjectName) ?? Enumerable.Empty<string>())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        var shortened = shortener.ShortenMany(allNamesForShortening);
-
-        var shortMap = new Dictionary<string, ShortenedName>(StringComparer.OrdinalIgnoreCase);
-        for (int i = 0; i < allNamesForShortening.Count; i++)
-        {
-            var name = allNamesForShortening[i];
-            if (!shortMap.ContainsKey(name))
-                shortMap[name] = shortened[i];
-        }
-
         var builder = new StringBuilder();
 
-        // Write successes
-        for (var i = 0; i < outputs.Count; i++)
+        // New #ALIAS emission (replaces prior NameShortener + bottom [n] footer refs for build outcomes).
+        // We receive full (/-normalized) output paths from BinlogReader (or basenames for legacy callers / tests).
+        // We derive logical keys (project-ish segment or leaf), assign short semantic #ALIASes,
+        // emit globals (incl. combo sets as #TFMS) at top, then a local alias def + outcome line per item.
+
+        var aliasTable = new AliasTable();
+
+        // Discover combo sets (TFMS etc.) across all provided combos (keyed by full path now).
+        var allComboSets = new HashSet<string>(StringComparer.Ordinal);
+        if (combinations != null)
         {
-            var orig = outputs[i];
-            var sn = shortMap.TryGetValue(orig, out var s) ? s : new ShortenedName(orig, null, null);
-            var line = sn.WithIndex();
-            if (combinations != null && combinations.TryGetValue(orig, out var combs) && combs.Count > 0)
-                line += $" ({string.Join(';', combs)})";
-            builder.AppendLine($"✅{line}");
+            foreach (var kv in combinations)
+                foreach (var c in kv.Value)
+                    allComboSets.Add(c);
+        }
+        if (failures != null)
+        {
+            foreach (var f in failures)
+                foreach (var c in f.Combinations ?? Array.Empty<string>())
+                    allComboSets.Add(c);
         }
 
-        // Write failures, applying shortening throughout (including to error file paths)
+        string? tfmsAlias = null;
+        if (allComboSets.Count > 0)
+        {
+            var sorted = allComboSets.OrderBy(x => x, StringComparer.Ordinal).ToArray();
+            var joined = string.Join("|", sorted);
+            tfmsAlias = aliasTable.AssignGlobal($"#TFMS={joined}");
+        }
+
+        // Write any globals we discovered (e.g. #TFMS=...) at the very top.
+        foreach (var line in aliasTable.AllEmittedGlobals())
+            builder.AppendLine(line);
+
+        // --- Successes ---
+        // Group by the alias key (project segment or leaf from DeriveProjectKey).
+        // Within each alias key, further group TFM variants of the *same* logical output
+        // (paths that only differ in the TFM directory under bin/Debug etc.).
+        // This ensures we emit *one* compact line with a pivot (e.g. (net10.0|net8.0|net9.0) or (#TFMS))
+        // instead of repeating the full path once per TFM.
+        var byKey = new Dictionary<string, List<(string full, IReadOnlyList<string>? combs)>>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var full in outputs)
+        {
+            string key = DeriveProjectKey(full);
+            if (!byKey.TryGetValue(key, out var lst))
+            {
+                lst = new List<(string, IReadOnlyList<string>?)>();
+                byKey[key] = lst;
+            }
+            IReadOnlyList<string>? combs = null;
+            combinations?.TryGetValue(full, out combs);
+            lst.Add((full, combs));
+        }
+
+        foreach (var (key, items) in byKey)
+        {
+            string alias = aliasTable.AssignForValue(key, key);
+            builder.AppendLine($"{alias}={key}");
+
+            // Sub-group by TFM-invariant form so variants of the same artifact collapse.
+            var subGroups = new Dictionary<string, List<(string full, IReadOnlyList<string>? combs)>>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var item in items)
+            {
+                string norm = item.full;
+                var tfmsForNorm = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                if (item.combs != null)
+                {
+                    foreach (var c in item.combs)
+                    {
+                        var t = c.Split('|')[0];
+                        if (!string.IsNullOrWhiteSpace(t))
+                        {
+                            tfmsForNorm.Add(t);
+                            // Blank this specific TFM dir for grouping purposes.
+                            var needle = "/" + t + "/";
+                            int pos = norm.IndexOf(needle, StringComparison.OrdinalIgnoreCase);
+                            if (pos >= 0)
+                                norm = norm.Substring(0, pos + 1) + "__TFM__" + norm.Substring(pos + needle.Length - 1);
+                            else
+                            {
+                                // also handle the case where the tfm is the last path segment (uncommon here)
+                                var lastNeedle = "/" + t;
+                                if (norm.EndsWith(lastNeedle, StringComparison.OrdinalIgnoreCase))
+                                    norm = norm.Substring(0, norm.Length - lastNeedle.Length) + "/__TFM__";
+                            }
+                        }
+                    }
+                }
+                if (!subGroups.TryGetValue(norm, out var g))
+                {
+                    g = new List<(string, IReadOnlyList<string>?)>();
+                    subGroups[norm] = g;
+                }
+                g.Add(item);
+            }
+
+            foreach (var g in subGroups.Values)
+            {
+                // Union of all TFMs for the items in this logical sub-group.
+                var groupTfms = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var it in g)
+                {
+                    if (it.combs != null)
+                        foreach (var c in it.combs)
+                        {
+                            var t = c.Split('|')[0];
+                            if (!string.IsNullOrWhiteSpace(t)) groupTfms.Add(t);
+                        }
+                }
+
+                // Representative path (any member is fine; they are equivalent modulo TFM dir).
+                string rep = g[0].full;
+
+                string disp = rep;
+
+                if (groupTfms.Count > 0)
+                {
+                    string pivotToken = tfmsAlias != null
+                        ? $"({tfmsAlias})"
+                        : "(" + string.Join("|", groupTfms.OrderBy(x => x, StringComparer.Ordinal)) + ")";
+
+                    // Replace the first known TFM dir occurrence with the pivot token.
+                    foreach (var t in groupTfms)
+                    {
+                        var needle = "/" + t + "/";
+                        int idx = disp.IndexOf(needle, StringComparison.OrdinalIgnoreCase);
+                        if (idx >= 0)
+                        {
+                            disp = disp.Substring(0, idx + 1) + pivotToken + disp.Substring(idx + needle.Length - 1);
+                            break;
+                        }
+                    }
+                }
+
+                // Extra compactness: substitute the alias token into the path on the RHS
+                // where the original project key (folder or output name) repeats.
+                // This produces forms like: .../tests/#MAAAU/bin/Debug/(#TFMS)/#MAAAU.dll
+                // which is still trivial for an LLM to expand back to full paths by substituting the alias value.
+                if (!string.IsNullOrEmpty(key) && key.Length > 1)
+                {
+                    // Safe because the key (e.g. Microsoft.Agents.AI.Foo) is long and distinctive.
+                    disp = disp.Replace(key, alias, StringComparison.OrdinalIgnoreCase);
+                }
+
+                builder.AppendLine($"✅{alias}→{disp}");
+            }
+        }
+
+        // --- Failures ---
         if (failures is { Count: > 0 })
         {
             if (outputs.Count > 0)
                 builder.AppendLine();
 
-            for (var i = 0; i < failures.Count; i++)
+            foreach (var proj in failures)
             {
-                var proj = failures[i];
-                var sn = shortMap.TryGetValue(proj.ProjectName, out var s) ? s : new ShortenedName(proj.ProjectName, null, null);
-                var line = sn.WithIndex();
+                string key = proj.ProjectName;
+                string alias = aliasTable.AssignForValue(key, key);
+
+                builder.AppendLine($"{alias}={key}");
+
                 var combs = proj.Combinations;
-                if (combs is { Count: > 0 })
-                    line += $" ({string.Join(';', combs)})";
-                builder.AppendLine($"❌{line}");
+                string suffix = (combs is { Count: > 0 }) ? $" ({string.Join(';', combs)})" : string.Empty;
+                builder.AppendLine($"❌{alias}/{suffix}");
 
                 foreach (var error in proj.Errors)
                 {
-                    var errLine = ShortenError(error, shortMap);
+                    // Keep existing relative stripping for errors under the project; we can later teach it #ALIAS too (task 3).
+                    var relative = StripProjectDirectoryPrefix(error, proj.ProjectName);
                     builder.Append(Tab);
-                    builder.AppendLine(errLine);
+                    builder.AppendLine(relative); // for now raw relative; ShortenError can be adapted later
                 }
             }
         }
 
-        WriteFooter(builder, shortener, shortened);
         writer.Write(builder);
+    }
+
+    // --- Helpers for the new #ALIAS format (build outcomes) ---
+
+    static string DeriveProjectKey(string fullPath)
+    {
+        if (string.IsNullOrWhiteSpace(fullPath))
+            return "Item";
+
+        // Look for the segment immediately preceding /bin/ or /obj/ (typical project root for the output).
+        var idx = fullPath.LastIndexOf("/bin/", StringComparison.OrdinalIgnoreCase);
+        if (idx < 0) idx = fullPath.LastIndexOf("/obj/", StringComparison.OrdinalIgnoreCase);
+        if (idx > 0)
+        {
+            var start = fullPath.LastIndexOf('/', idx - 1);
+            if (start >= 0 && start + 1 < idx)
+            {
+                var seg = fullPath.Substring(start + 1, idx - start - 1);
+                if (!string.IsNullOrEmpty(seg))
+                    return seg;
+            }
+        }
+
+        // Fallback: leaf without extension (e.g. the dll/exe name, or last dir).
+        var leaf = Path.GetFileNameWithoutExtension(fullPath.Replace('\\', '/'));
+        if (!string.IsNullOrEmpty(leaf))
+            return leaf;
+
+        return fullPath.Split('/').LastOrDefault(s => !string.IsNullOrEmpty(s)) ?? "Item";
+    }
+
+    static string BuildDisplayPath(string fullPath, IReadOnlyList<string>? combsForThis, string? tfmsAlias)
+    {
+        var p = fullPath; // already /-normalized by reader in the common case
+
+        if (combsForThis is { Count: > 0 })
+        {
+            // Collect the tfm parts (before any |rid/platform).
+            var tfms = combsForThis
+                .Select(c => c.Split('|')[0])
+                .Where(t => !string.IsNullOrWhiteSpace(t))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            if (tfms.Length > 0)
+            {
+                // Replace the first occurrence of a /<tfm>/ segment with the pivot form (/#TFMS) or (netX|netY).
+                // We scan a copy of the list so we can try each until one matches.
+                foreach (var tfm in tfms)
+                {
+                    var needle = "/" + tfm + "/";
+                    var idx = p.IndexOf(needle, StringComparison.OrdinalIgnoreCase);
+                    if (idx >= 0)
+                    {
+                        string pivotToken;
+                        if (tfmsAlias is not null)
+                            pivotToken = $"({tfmsAlias})";
+                        else
+                            pivotToken = "(" + string.Join("|", tfms) + ")";
+
+                        p = p.Substring(0, idx + 1) + pivotToken + p.Substring(idx + needle.Length - 1);
+                        break;
+                    }
+                }
+            }
+        }
+
+        return p;
+    }
+
+    // Lightweight alias table implementing the rules from the plan.
+    sealed class AliasTable
+    {
+        readonly Dictionary<string, string> valueToAlias = new(StringComparer.OrdinalIgnoreCase);
+        readonly List<string> globals = new();
+        readonly List<string> locals = new();
+
+        public string AssignGlobal(string aliasEqualsValue)
+        {
+            // aliasEqualsValue is of the form "#TFMS=net8.0|net10.0" or "#MEC=..."
+            var eq = aliasEqualsValue.IndexOf('=');
+            if (eq <= 0) return aliasEqualsValue;
+
+            var alias = aliasEqualsValue.Substring(0, eq);
+            var val = aliasEqualsValue.Substring(eq + 1);
+
+            if (!valueToAlias.ContainsKey(val))
+            {
+                valueToAlias[val] = alias;
+                globals.Add(aliasEqualsValue);
+            }
+            return alias;
+        }
+
+        public string AssignForValue(string value, string? preferredDisplayValue = null)
+        {
+            if (valueToAlias.TryGetValue(value, out var existing))
+                return existing;
+
+            var alias = Abbreviate(value);
+            var candidate = alias;
+            int suffix = 2;
+            while (valueToAlias.Values.Contains(candidate, StringComparer.Ordinal))
+                candidate = alias + suffix++;
+
+            valueToAlias[value] = candidate;
+            var displayVal = string.IsNullOrEmpty(preferredDisplayValue) ? value : preferredDisplayValue;
+            locals.Add($"{candidate}={displayVal}");
+            return candidate;
+        }
+
+        public IEnumerable<string> AllEmittedGlobals() => globals;
+
+        // Currently we emit locals inline (right before each outcome) rather than from this list,
+        // so that the definition appears immediately before the use per the spec.
+        public IEnumerable<string> AllEmittedLocals() => locals;
+    }
+
+    static string Abbreviate(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return "#Item";
+
+        // For simple short project names without dots or path separators (e.g. "md", "Client", "Hosting")
+        // produce a readable #Name form. This keeps the token after ✅/❌ familiar (matches user examples like #Hosting).
+        var normalized = value.Replace('\\', '/');
+        if (!normalized.Contains('.') && !normalized.Contains('/'))
+        {
+            return "#" + value;
+        }
+
+        // Semantic dotted: first upper-case-starting letter(s) of each dot segment.
+        // Matches examples: Microsoft.Agents.AI → #MAAI, Microsoft.Extensions.Configuration → #MEC
+        var segs = normalized.Split('.', '/');
+        var sb = new StringBuilder("#");
+        for (int i = 0; i < segs.Length; i++)
+        {
+            var s = segs[i];
+            if (s.Length == 0) continue;
+
+            bool isLast = (i == segs.Length - 1);
+            // Only swallow the whole last segment for short all-caps acronyms (e.g. "AI").
+            if (isLast && s.Length <= 2 && s.All(char.IsUpper))
+            {
+                sb.Append(s);
+            }
+            else
+            {
+                char first = s.FirstOrDefault(char.IsLetter);
+                if (first == '\0') first = s[0];
+                sb.Append(char.ToUpperInvariant(first));
+            }
+        }
+        return sb.ToString();
     }
 
     static string ShortenError(string error, IReadOnlyDictionary<string, ShortenedName> map)
     {
-        if (string.IsNullOrEmpty(error) || map.Count == 0)
+        if (string.IsNullOrEmpty(error))
+            return error;
+
+        // Normalize path separators for consistent display (forward slashes) in markdown output
+        error = error.Replace('\\', '/');
+
+        if (map.Count == 0)
             return error;
 
         // Prefer longest (most specific) match first
@@ -104,6 +389,21 @@ static class MarkdownWriter
             }
         }
 
+        return error;
+    }
+
+    static string StripProjectDirectoryPrefix(string error, string projectName)
+    {
+        if (string.IsNullOrEmpty(error) || string.IsNullOrEmpty(projectName))
+            return error;
+
+        // Normalize for matching (incoming may have \ from direct test data or pre-norm)
+        error = error.Replace('\\', '/');
+        var prefix = projectName + "/";
+        if (error.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return error[prefix.Length..];
+        }
         return error;
     }
 
