@@ -61,9 +61,79 @@ static class MarkdownWriter
             tfmsAlias = aliasTable.AssignGlobal($"#TFMS={joined}");
         }
 
+        // Detect a common output root like "artifacts/bin" (or "bin") preceding per-project dirs
+        // and assign a #bin (or similar) global alias so RHS paths can use #bin/...
+        string? binRootAlias = null;
+        var binRootValues = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var o in outputs)
+        {
+            var pp = o.Replace('\\', '/');
+            int b = pp.IndexOf("/bin/", StringComparison.OrdinalIgnoreCase);
+            if (b < 0) b = pp.IndexOf("/obj/", StringComparison.OrdinalIgnoreCase);
+            if (b < 0 && (pp.StartsWith("bin/", StringComparison.OrdinalIgnoreCase) || pp.StartsWith("obj/", StringComparison.OrdinalIgnoreCase)))
+                b = 0; // path starts directly under bin/ or obj/
+            if (b >= 0)
+            {
+                // include up to and including the bin/obj segment, e.g. "artifacts/bin" or "bin"
+                // find the end of that segment
+                int slashAfter = pp.IndexOf('/', b + 1);
+                string root;
+                if (b == 0)
+                {
+                    root = (slashAfter > 0) ? pp.Substring(0, slashAfter) : pp;
+                }
+                else
+                {
+                    // b points at the '/' before 'bin', so root goes up to end of 'bin'
+                    root = (slashAfter > 0) ? pp.Substring(0, slashAfter) : pp;
+                }
+                if (!string.IsNullOrEmpty(root))
+                    binRootValues.Add(root);
+            }
+        }
+        if (binRootValues.Count == 1)
+        {
+            var br = binRootValues.First();
+            // Prefer short #bin; AssignGlobal will dedupe if already present under another name.
+            binRootAlias = aliasTable.AssignGlobal($"#bin={br}");
+        }
+
         // Write any globals we discovered (e.g. #TFMS=...) at the very top.
         foreach (var line in aliasTable.AllEmittedGlobals())
             builder.AppendLine(line);
+
+        // Track which alias tokens have had their "alias=..." definition lines emitted in this output.
+        // Used to ensure prerequisite stem aliases (e.g. #M) are defined before any child that
+        // references them in its own definition RHS (e.g. #MANC=#M.AspNetCore) or outcome path.
+        var emittedDefs = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var g in aliasTable.AllEmittedGlobals())
+        {
+            var eq = g.IndexOf('=');
+            if (eq > 0)
+                emittedDefs.Add(g.Substring(0, eq));
+        }
+
+        // Local helper: ensure any #Alias references present in 'text' have their definitions
+        // written (to 'builder') before proceeding. Recurses for chained references.
+        // Only emits for aliases this AliasTable knows about (via GetRhsForAlias).
+        void EnsureAliasDefs(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+            var matches = System.Text.RegularExpressions.Regex.Matches(text, @"#([A-Za-z][A-Za-z0-9]*)");
+            foreach (System.Text.RegularExpressions.Match m in matches)
+            {
+                var token = "#" + m.Groups[1].Value;
+                if (emittedDefs.Contains(token)) continue;
+                var rhs = aliasTable.GetRhsForAlias(token);
+                if (rhs != null)
+                {
+                    // Ensure the stem(s) *this* rhs itself references first (e.g. if rhs contains #M)
+                    EnsureAliasDefs(rhs);
+                    if (emittedDefs.Add(token))
+                        builder.AppendLine($"{token}={rhs}");
+                }
+            }
+        }
 
         // --- Successes ---
         // Group by the alias key (project segment or leaf from DeriveProjectKey).
@@ -83,13 +153,36 @@ static class MarkdownWriter
             }
             IReadOnlyList<string>? combs = null;
             combinations?.TryGetValue(full, out combs);
+            if (combs is null || combs.Count == 0)
+            {
+                // Fall back to sniffing TFMs from the path so we still get TFM pivots
+                // for multi-TFM projects even when the binlog does not surface combo metadata.
+                var sniffed = SniffTfmsFromPath(full).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+                if (sniffed.Length > 0)
+                    combs = sniffed;
+            }
             lst.Add((full, combs));
         }
+
+        // Pre-assign in length order so shorter stem names (potential alias bases) are registered
+        // before longer dotted family members, enabling chained display forms like #MC=#M.Core .
+        foreach (var k in byKey.Keys.OrderBy(k => k.Length).ThenBy(k => k, StringComparer.OrdinalIgnoreCase))
+            _ = aliasTable.AssignForValue(k, k);
 
         foreach (var (key, items) in byKey)
         {
             string alias = aliasTable.AssignForValue(key, key);
-            builder.AppendLine($"{alias}={key}");
+            var dispKey = aliasTable.GetDisplayFor(key) ?? key;
+
+            // Ensure any stem references in this alias's definition RHS (e.g. "#M.Core") are defined first.
+            // This guarantees bases like #M appear even if their def would have been emitted late
+            // (due to byKey insertion order from path sorting) or if we need to surface a stem
+            // that is only used for chaining in children.
+            EnsureAliasDefs(dispKey);
+
+            // Guarded: if Ensure pulled in this alias (as a stem for an earlier sibling), don't duplicate.
+            if (emittedDefs.Add(alias))
+                builder.AppendLine($"{alias}={dispKey}");
 
             // Sub-group by TFM-invariant form so variants of the same artifact collapse.
             var subGroups = new Dictionary<string, List<(string full, IReadOnlyList<string>? combs)>>(StringComparer.OrdinalIgnoreCase);
@@ -98,9 +191,15 @@ static class MarkdownWriter
             {
                 string norm = item.full;
                 var tfmsForNorm = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                if (item.combs != null)
+                var effectiveCombs = item.combs;
+                if (effectiveCombs is null || effectiveCombs.Count == 0)
                 {
-                    foreach (var c in item.combs)
+                    var sniffed = SniffTfmsFromPath(item.full).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+                    if (sniffed.Length > 0) effectiveCombs = sniffed;
+                }
+                if (effectiveCombs != null)
+                {
+                    foreach (var c in effectiveCombs)
                     {
                         var t = c.Split('|')[0];
                         if (!string.IsNullOrWhiteSpace(t))
@@ -135,8 +234,14 @@ static class MarkdownWriter
                 var groupTfms = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var it in g)
                 {
-                    if (it.combs != null)
-                        foreach (var c in it.combs)
+                    var ec = it.combs;
+                    if (ec is null || ec.Count == 0)
+                    {
+                        var sniffed = SniffTfmsFromPath(it.full).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+                        if (sniffed.Length > 0) ec = sniffed;
+                    }
+                    if (ec != null)
+                        foreach (var c in ec)
                         {
                             var t = c.Split('|')[0];
                             if (!string.IsNullOrWhiteSpace(t)) groupTfms.Add(t);
@@ -177,6 +282,13 @@ static class MarkdownWriter
                     disp = disp.Replace(key, alias, StringComparison.OrdinalIgnoreCase);
                 }
 
+                // Also substitute any known path prefix aliases (e.g. "artifacts/bin" -> "#bin")
+                // so we can render forms like #bin/#MC/Debug/(...)/#MC.dll .
+                disp = aliasTable.SubstitutePathPrefixes(disp);
+
+                // Ensure any alias references that will appear in the outcome line (project alias in path, etc.)
+                EnsureAliasDefs(disp);
+
                 builder.AppendLine($"✅{alias}→{disp}");
             }
         }
@@ -191,8 +303,11 @@ static class MarkdownWriter
             {
                 string key = proj.ProjectName;
                 string alias = aliasTable.AssignForValue(key, key);
+                var dispKey = aliasTable.GetDisplayFor(key) ?? key;
 
-                builder.AppendLine($"{alias}={key}");
+                EnsureAliasDefs(dispKey);
+                if (emittedDefs.Add(alias))
+                    builder.AppendLine($"{alias}={dispKey}");
 
                 var combs = proj.Combinations;
                 string suffix = (combs is { Count: > 0 }) ? $" ({string.Join(';', combs)})" : string.Empty;
@@ -218,26 +333,93 @@ static class MarkdownWriter
         if (string.IsNullOrWhiteSpace(fullPath))
             return "Item";
 
-        // Look for the segment immediately preceding /bin/ or /obj/ (typical project root for the output).
-        var idx = fullPath.LastIndexOf("/bin/", StringComparison.OrdinalIgnoreCase);
-        if (idx < 0) idx = fullPath.LastIndexOf("/obj/", StringComparison.OrdinalIgnoreCase);
-        if (idx > 0)
+        var p = fullPath.Replace('\\', '/');
+        var segs = p.Split('/');
+
+        // Find last "bin" or "obj" segment; look *after* it for the project directory
+        // (supports artifacts/bin/<Project>/Config/TFM/<Project>.dll layouts).
+        int binIdx = -1;
+        for (int i = segs.Length - 1; i >= 0; i--)
         {
-            var start = fullPath.LastIndexOf('/', idx - 1);
-            if (start >= 0 && start + 1 < idx)
+            var s = segs[i];
+            if (s.Equals("bin", StringComparison.OrdinalIgnoreCase) || s.Equals("obj", StringComparison.OrdinalIgnoreCase))
             {
-                var seg = fullPath.Substring(start + 1, idx - start - 1);
-                if (!string.IsNullOrEmpty(seg))
-                    return seg;
+                binIdx = i;
+                break;
             }
         }
 
-        // Fallback: leaf without extension (e.g. the dll/exe name, or last dir).
-        var leaf = Path.GetFileNameWithoutExtension(fullPath.Replace('\\', '/'));
-        if (!string.IsNullOrEmpty(leaf))
+        if (binIdx >= 0 && binIdx + 1 < segs.Length)
+        {
+            for (int i = binIdx + 1; i < segs.Length; i++)
+            {
+                var s = segs[i];
+                if (string.IsNullOrEmpty(s)) continue;
+                if (IsConfigDir(s) || IsTfmDir(s)) continue;
+                if (LooksLikeProjectSegment(s))
+                    return s;
+                if (s.Contains('.')) break; // hit a file leaf
+            }
+        }
+
+        // Fallback: segment immediately preceding the bin/obj (classic <proj>/bin/... layout)
+        if (binIdx > 0)
+        {
+            var prev = segs[binIdx - 1];
+            if (!string.IsNullOrEmpty(prev) && !IsConfigDir(prev) && !IsTfmDir(prev) && LooksLikeProjectSegment(prev))
+                return prev;
+        }
+
+        // Fallback: leaf without extension
+        var leaf = Path.GetFileNameWithoutExtension(p);
+        if (!string.IsNullOrEmpty(leaf) && !leaf.Equals("bin", StringComparison.OrdinalIgnoreCase) && !leaf.Equals("obj", StringComparison.OrdinalIgnoreCase))
             return leaf;
 
-        return fullPath.Split('/').LastOrDefault(s => !string.IsNullOrEmpty(s)) ?? "Item";
+        return segs.LastOrDefault(s => !string.IsNullOrEmpty(s)) ?? "Item";
+    }
+
+    static bool IsConfigDir(string s) =>
+        s.Equals("Debug", StringComparison.OrdinalIgnoreCase) ||
+        s.Equals("Release", StringComparison.OrdinalIgnoreCase) ||
+        s.Equals("DebugAnyCPU", StringComparison.OrdinalIgnoreCase) ||
+        s.Equals("ReleaseAnyCPU", StringComparison.OrdinalIgnoreCase);
+
+    static bool IsTfmDir(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return false;
+        var lower = s.ToLowerInvariant();
+        if (lower.StartsWith("net") || lower.StartsWith("netstandard") || lower.StartsWith("netcoreapp") || lower.StartsWith("mono") || lower.StartsWith("portable"))
+            return true;
+        // Conservative for other TFM-ish: short, starts with digit or 'v', only alphanum/.- chars.
+        // Avoid matching long dotted project names like "ModelContextProtocol.Analyzers.Tests".
+        if (s.Length <= 10 && (char.IsDigit(s[0]) || s.StartsWith("v", StringComparison.OrdinalIgnoreCase) || s.StartsWith("V", StringComparison.OrdinalIgnoreCase)))
+        {
+            if (s.All(ch => char.IsLetterOrDigit(ch) || ch == '.' || ch == '-'))
+                return true;
+        }
+        return false;
+    }
+
+    static bool LooksLikeProjectSegment(string s)
+    {
+        if (string.IsNullOrEmpty(s) || s.Length <= 1) return false;
+        if (s.IndexOfAny(new[] { '<', '>', '|', '*', '?', ' ' }) >= 0) return false;
+        if (!s.Any(char.IsLetter)) return false;
+        if (IsConfigDir(s) || IsTfmDir(s)) return false;
+        return true;
+    }
+
+    static IEnumerable<string> SniffTfmsFromPath(string full)
+    {
+        if (string.IsNullOrEmpty(full)) yield break;
+        // Match common TFM directory segments: /net8.0/, /net9.0/, /net10.0/, /netstandard2.0/, /net472/ etc.
+        var re = new System.Text.RegularExpressions.Regex(@"/(net[0-9a-zA-Z.]+|netstandard[0-9.]*)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        foreach (System.Text.RegularExpressions.Match m in re.Matches(full.Replace('\\', '/')))
+        {
+            var t = m.Groups[1].Value;
+            if (!string.IsNullOrWhiteSpace(t))
+                yield return t;
+        }
     }
 
     static string BuildDisplayPath(string fullPath, IReadOnlyList<string>? combsForThis, string? tfmsAlias)
@@ -283,6 +465,8 @@ static class MarkdownWriter
     sealed class AliasTable
     {
         readonly Dictionary<string, string> valueToAlias = new(StringComparer.OrdinalIgnoreCase);
+        readonly Dictionary<string, string> displayOverrides = new(StringComparer.OrdinalIgnoreCase);
+        readonly Dictionary<string, string> aliasToRhs = new(StringComparer.Ordinal);
         readonly List<string> globals = new();
         readonly List<string> locals = new();
 
@@ -298,6 +482,7 @@ static class MarkdownWriter
             if (!valueToAlias.ContainsKey(val))
             {
                 valueToAlias[val] = alias;
+                aliasToRhs[alias] = val;
                 globals.Add(aliasEqualsValue);
             }
             return alias;
@@ -315,7 +500,24 @@ static class MarkdownWriter
                 candidate = alias + suffix++;
 
             valueToAlias[value] = candidate;
+
             var displayVal = string.IsNullOrEmpty(preferredDisplayValue) ? value : preferredDisplayValue;
+
+            // Support chained aliases for dotted names that share a stem already aliased, e.g.
+            // #M=ModelContextProtocol then #MC=#M.Core for ModelContextProtocol.Core
+            foreach (var kv in valueToAlias.OrderByDescending(kv => kv.Key.Length))
+            {
+                var prevVal = kv.Key;
+                if (prevVal.Length > 0 && value.StartsWith(prevVal + ".", StringComparison.OrdinalIgnoreCase))
+                {
+                    var rest = value.Substring(prevVal.Length + 1);
+                    displayVal = kv.Value + "." + rest;
+                    break;
+                }
+            }
+
+            displayOverrides[value] = displayVal;
+            aliasToRhs[candidate] = displayVal;
             locals.Add($"{candidate}={displayVal}");
             return candidate;
         }
@@ -325,6 +527,31 @@ static class MarkdownWriter
         // Currently we emit locals inline (right before each outcome) rather than from this list,
         // so that the definition appears immediately before the use per the spec.
         public IEnumerable<string> AllEmittedLocals() => locals;
+
+        // Substitute known path-prefix values (e.g. "artifacts/bin") with their assigned aliases (e.g. "#bin").
+        // Used to compress the RHS display paths. Longest match first.
+        public string SubstitutePathPrefixes(string s)
+        {
+            var p = s;
+            foreach (var kv in valueToAlias.OrderByDescending(kv => kv.Key.Length))
+            {
+                var v = kv.Key;
+                if (!string.IsNullOrEmpty(v) && (v.Contains('/') || v.Contains('\\')))
+                {
+                    p = p.Replace(v, kv.Value, StringComparison.OrdinalIgnoreCase);
+                }
+            }
+            return p;
+        }
+
+        // Expose for diagnostics/tests if needed.
+        internal IReadOnlyDictionary<string, string> ValueToAlias => valueToAlias;
+
+        public string? GetDisplayFor(string value)
+            => displayOverrides.TryGetValue(value, out var d) ? d : null;
+
+        public string? GetRhsForAlias(string alias)
+            => aliasToRhs.TryGetValue(alias, out var rhs) ? rhs : null;
     }
 
     static string Abbreviate(string value)
@@ -332,16 +559,25 @@ static class MarkdownWriter
         if (string.IsNullOrWhiteSpace(value))
             return "#Item";
 
-        // For simple short project names without dots or path separators (e.g. "md", "Client", "Hosting")
-        // produce a readable #Name form. This keeps the token after ✅/❌ familiar (matches user examples like #Hosting).
+        // For simple *short* project names without dots or path separators (e.g. "md", "Client", "Hosting")
+        // produce a readable #Name form. Long names (e.g. ModelContextProtocol) get initial-letter form (#M)
+        // so that family members can chain nicely (#MANC=#M.AspNetCore).
         var normalized = value.Replace('\\', '/');
         if (!normalized.Contains('.') && !normalized.Contains('/'))
         {
-            return "#" + value;
+            if (value.Length <= 12)
+                return "#" + value;
+            // fall through for long single-segment names to produce short #X form
         }
 
-        // Semantic dotted: first upper-case-starting letter(s) of each dot segment.
-        // Matches examples: Microsoft.Agents.AI → #MAAI, Microsoft.Extensions.Configuration → #MEC
+        // Semantic dotted + PascalCase aware:
+        // - Root (first) segment contributes only its first significant letter (keeps stems short: ModelContextProtocol → #M).
+        // - Subsequent segments contribute first letter + any internal uppercase starters (PascalCase subwords).
+        //   This yields distinctive tokens without numeric suffixes, e.g.:
+        //     ModelContextProtocol.AspNetCore       → #MANC
+        //     ModelContextProtocol.ConformanceClient → #MCC
+        //     ModelContextProtocol.ConformanceServer → #MCS
+        //     ModelContextProtocol.Core              → #MC
         var segs = normalized.Split('.', '/');
         var sb = new StringBuilder("#");
         for (int i = 0; i < segs.Length; i++)
@@ -349,17 +585,45 @@ static class MarkdownWriter
             var s = segs[i];
             if (s.Length == 0) continue;
 
-            bool isLast = (i == segs.Length - 1);
-            // Only swallow the whole last segment for short all-caps acronyms (e.g. "AI").
-            if (isLast && s.Length <= 2 && s.All(char.IsUpper))
+            var letters = ExtractSignificantUppers(s);
+            if (letters.Length == 0) continue;
+
+            if (i == 0)
             {
-                sb.Append(s);
+                // Stem/root segment: keep it to a single letter so family members can form #M + rest
+                sb.Append(letters[0]);
             }
             else
             {
-                char first = s.FirstOrDefault(char.IsLetter);
-                if (first == '\0') first = s[0];
-                sb.Append(char.ToUpperInvariant(first));
+                sb.Append(letters);
+            }
+        }
+        if (sb.Length == 1)
+        {
+            // Fallback if nothing contributed (very unusual): use first letter of original
+            char first = value.FirstOrDefault(char.IsLetter);
+            if (first == '\0') first = value[0];
+            sb.Append(char.ToUpperInvariant(first));
+        }
+        return sb.ToString();
+    }
+
+    static string ExtractSignificantUppers(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return string.Empty;
+        var sb = new StringBuilder();
+        bool tookFirst = false;
+        foreach (var ch in s)
+        {
+            if (char.IsUpper(ch) && char.IsLetter(ch))
+            {
+                sb.Append(ch);
+                tookFirst = true;
+            }
+            else if (!tookFirst && char.IsLetter(ch))
+            {
+                sb.Append(char.ToUpperInvariant(ch));
+                tookFirst = true;
             }
         }
         return sb.ToString();

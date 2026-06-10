@@ -15,7 +15,8 @@ static class BinlogReader
         // Fall back to the process current directory so that output paths are always relative
         // (shorter, and what an LLM expects when it later wants to open files).
         var baseDirectory = GetSolutionDirFromBinlog(build) ?? Directory.GetCurrentDirectory();
-        baseDirectory = baseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        baseDirectory = baseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                                     .Replace('\\', '/').TrimEnd('/');
 
         var outputs = new List<string>();
         var combosByOutput = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
