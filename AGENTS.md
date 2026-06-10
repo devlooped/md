@@ -7,15 +7,15 @@
 ### Essential Commands
 
 - **Restore dependencies**: `dotnet restore`
-- **Build the solution**: `dnx md -y build`
-- **Run tests**: `dnx md -y test`
+- **Build the solution**: `dotnet build`
+- **Run tests**: `dotnet test`
 
 The `md` tool wraps `dotnet build` / `dotnet test`, swallows verbose SDK output, and emits token-minimal markdown for AI consumption.
 
 ### Build Validation
 
 - **Always run before committing**:
-  - `dnx md -y test`
+  - `dotnet test`
   - `dotnet format whitespace -v:diag --exclude ~/.nuget`
   - `dotnet format style -v:diag --exclude ~/.nuget`
 

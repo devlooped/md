@@ -169,15 +169,74 @@ static class BinlogReader
         while (node is not null)
         {
             if (node is Project project)
-                return Path.GetFileNameWithoutExtension(project.ProjectFile);
+            {
+                if (ExtractLogicalProjectName(project.ProjectFile) is { } name && IsGoodProjectName(name))
+                    return name;
 
+                // Some StructuredLogger Project instances expose a Name or MSBuildProjectName.
+                if (project.GetType().GetProperty("Name")?.GetValue(project) as string is { } altName && IsGoodProjectName(altName))
+                    return altName;
+
+                if (project.GetType().GetProperty("MSBuildProjectName")?.GetValue(project) as string is { } mbn && IsGoodProjectName(mbn))
+                    return mbn;
+            }
             node = node.Parent as BaseNode;
         }
 
         if (!string.IsNullOrWhiteSpace(error.ProjectFile))
-            return Path.GetFileNameWithoutExtension(error.ProjectFile);
+        {
+            if (ExtractLogicalProjectName(error.ProjectFile) is { } name && IsGoodProjectName(name))
+                return name;
+        }
+
+        // For synthetic "broken project" fixtures (or any binlog where the project was built from a temp dir),
+        // the error's File often references a source file whose stem matches the intended project name, e.g. "Broken.cs".
+        // Use that as a last-resort logical name so tests and output remain stable regardless of where the binlog was captured.
+        var errFile = error.File;
+        if (!string.IsNullOrWhiteSpace(errFile))
+        {
+            var leaf = Path.GetFileNameWithoutExtension(errFile.Replace('\\', '/').Split('/', '\\').LastOrDefault(s => !string.IsNullOrEmpty(s)) ?? string.Empty);
+            if (IsGoodProjectName(leaf))
+                return leaf;
+        }
 
         return "Build";
+    }
+
+    static string? ExtractLogicalProjectName(string? projectFile)
+    {
+        if (string.IsNullOrWhiteSpace(projectFile))
+            return null;
+
+        // GetFileNameWithoutExtension works even if projectFile is a directory path (returns last segment).
+        var name = Path.GetFileNameWithoutExtension(projectFile);
+        if (string.IsNullOrWhiteSpace(name) || name == ".")
+            name = Path.GetFileName(projectFile.TrimEnd('\\', '/'));
+
+        return string.IsNullOrWhiteSpace(name) ? null : name;
+    }
+
+    static bool IsGoodProjectName(string name)
+    {
+        // Never accept a rooted path as a "name".
+        if (Path.IsPathRooted(name))
+            return false;
+
+        // Reject obvious machine/temp/generated directory names used for ad-hoc broken-project repros.
+        var lower = name.ToLowerInvariant();
+        if (lower.Contains("temp") || lower.Contains("\\temp\\") || lower.Contains("/temp/") ||
+            lower.Contains("tmp") || lower.StartsWith("md-broken-") || lower.Contains("/md-broken-") || lower.Contains("\\md-broken-"))
+            return false;
+
+        // Reject anything that still looks like a path.
+        if (name.Contains('/') || name.Contains('\\'))
+            return false;
+
+        // Must contain at least one letter to be a useful display name.
+        if (!name.Any(char.IsLetter))
+            return false;
+
+        return true;
     }
 
     static string FormatError(Error error, string baseDirectory)

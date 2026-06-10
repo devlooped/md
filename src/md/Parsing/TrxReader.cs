@@ -51,12 +51,17 @@ partial class TrxReader
             }
         }
 
+        // Failures are sorted by full test name so that markdown emission (and any other consumers) lists them in name order.
+        var sortedFailures = failures
+            .OrderBy(f => f.FullName, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
         return new TrxSummary(
             assemblies
                 .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
                 .Select(x => new TrxAssemblyResult(x.Key, x.Value.Passed, x.Value.Failed, x.Value.Skipped))
                 .ToArray(),
-            failures);
+            sortedFailures);
     }
 
     static string ResolveAssemblyName(XDocument doc, XElement result, string trxPath)

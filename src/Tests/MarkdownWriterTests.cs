@@ -90,6 +90,12 @@ public class MarkdownWriterTests
             output);
         Assert.Contains("[1]: MyCompany.MyApp.", output);
         Assert.Contains("[2]: MyCompany.MyApp.Tests.", output);
+
+        // Failures are sorted by name (AlsoFails before Fails) for deterministic output.
+        var firstFailIdx = output.IndexOf("❌", output.IndexOf("IntegrationTests"));
+        var alsoIdx = output.IndexOf("AlsoFails", firstFailIdx);
+        var failsIdx = output.IndexOf("UnitTests.Fails", firstFailIdx);
+        Assert.True(alsoIdx >= 0 && failsIdx > alsoIdx, "test failures should be emitted sorted by name");
     }
 
     [Fact]

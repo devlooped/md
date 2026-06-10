@@ -730,11 +730,13 @@ static class MarkdownWriter
         if (failures.Count > 0)
             builder.AppendLine();
 
-        var failureNames = shortener.ShortenMany(failures.Select(f => f.FullName).ToArray());
-        for (var i = 0; i < failures.Count; i++)
+        // Sort individual test failures by name for deterministic "Sorting tests by name" output.
+        var orderedFailures = failures.OrderBy(f => f.FullName, StringComparer.OrdinalIgnoreCase).ToArray();
+        var failureNames = shortener.ShortenMany(orderedFailures.Select(f => f.FullName).ToArray());
+        for (var i = 0; i < orderedFailures.Length; i++)
         {
             builder.AppendLine($"❌{failureNames[i].WithIndex()}");
-            WriteFailureDetails(builder, failures[i].Message, failures[i].StackTrace);
+            WriteFailureDetails(builder, orderedFailures[i].Message, orderedFailures[i].StackTrace);
         }
 
         var footerNames = assemblyNames.Concat(failureNames).ToArray();
