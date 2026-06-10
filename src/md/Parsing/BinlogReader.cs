@@ -45,11 +45,13 @@ static class BinlogReader
                         // Make relative to SolutionDir (preferred) or cwd. This is the key
                         // improvement requested: success paths in the markdown should not be
                         // absolute machine-specific paths.
-                        if (Path.IsPathRooted(path) &&
-                            path.StartsWith(baseDirectory, StringComparison.OrdinalIgnoreCase))
+                        // Use normalized prefix match (no Path.IsPathRooted) so it works cross-platform
+                        // when paths use \ vs / (e.g. binlog recorded on Windows, reader on Linux, or vice-versa).
+                        if (path.StartsWith(baseDirectory, StringComparison.OrdinalIgnoreCase) &&
+                            (path.Length == baseDirectory.Length || path[baseDirectory.Length] == '/'))
                         {
                             path = path.Substring(baseDirectory.Length)
-                                       .TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                                       .TrimStart('/')
                                        .Replace('\\', '/');
                         }
 
@@ -118,6 +120,8 @@ static class BinlogReader
             return null;
 
         baseDirectory ??= Directory.GetCurrentDirectory();
+        baseDirectory = baseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                                     .Replace('\\', '/').TrimEnd('/');
         var build = Serialization.Read(binlogPath);
         var dataByProject = new Dictionary<string, (HashSet<string> Errors, HashSet<string> Combos)>(StringComparer.OrdinalIgnoreCase);
 
@@ -181,8 +185,17 @@ static class BinlogReader
         var file = error.File;
         if (!string.IsNullOrWhiteSpace(file))
         {
-            if (Path.IsPathRooted(file) && file.StartsWith(baseDirectory, StringComparison.OrdinalIgnoreCase))
-                file = file[baseDirectory.Length..].TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            // Normalize for cross-separator relativization (handles \ in paths when base uses / or CI fixtures).
+            var f = file.Replace('\\', '/');
+            if (f.StartsWith(baseDirectory, StringComparison.OrdinalIgnoreCase) &&
+                (f.Length == baseDirectory.Length || f[baseDirectory.Length] == '/'))
+            {
+                file = f.Substring(baseDirectory.Length).TrimStart('/');
+            }
+            else
+            {
+                file = f;
+            }
             file = file.Replace('\\', '/');
         }
 

@@ -6,7 +6,18 @@ namespace Tests;
 public class CliIntegrationTests
 {
     static string RepoRoot => Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
-    static string MdDll => Path.Combine(RepoRoot, "src", "md", "bin", "Debug", "net10.0", "md.dll");
+    static string Config
+    {
+        get
+        {
+            // Infer Debug/Release from the test assembly's bin/<config>/ layout so integration tests
+            // work under both local Debug builds and CI Release builds (which set Configuration=Release).
+            var dir = AppContext.BaseDirectory.Replace('\\', '/');
+            var m = System.Text.RegularExpressions.Regex.Match(dir, @"/bin/(Debug|Release)/", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            return m.Success ? m.Groups[1].Value : "Debug";
+        }
+    }
+    static string MdDll => Path.Combine(RepoRoot, "src", "md", "bin", Config, "net10.0", "md.dll");
     // Use dotnet exec on the dll for e2e launches. This avoids apphost exe lock timing issues on Windows
     // when the solution under test has a ProjectReference back to the md tool (whose outputs get locked
     // by the host running the "md" under test). The managed behavior is identical.
