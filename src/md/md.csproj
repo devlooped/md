@@ -10,7 +10,7 @@
     <Description>Minimal markdown build/test output for AI consumption.</Description>
 
     <PackageId>md</PackageId>
-    <ToolCommandName>md</ToolCommandName>
+    <ToolCommandName>dotnet-md</ToolCommandName>
     <PackAsTool>true</PackAsTool>
     <PackageReadmeFile>readme.md</PackageReadmeFile>
     <PackageTags>dotnet dotnet-tool</PackageTags>
