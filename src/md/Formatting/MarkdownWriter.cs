@@ -6,6 +6,16 @@ static class MarkdownWriter
 {
     const char Tab = '\t';
 
+    // Returns a comparable key (primarily the Version) for semantic TFM ordering
+    // using the official NuGet.Frameworks parser. The returned tuple is structurally
+    // comparable and will put net8.0 before net9.0 before net10.0 etc.
+    static (System.Version? V, string Fw, string Prof, string Plat, System.Version? PlatV)
+        GetTfmKey(string tfm)
+    {
+        var f = NuGet.Frameworks.NuGetFramework.ParseFolder(tfm ?? string.Empty);
+        return (f.Version, f.Framework ?? "", f.Profile ?? "", f.Platform ?? "", f.PlatformVersion);
+    }
+
     public static void WriteBuildSuccess(IReadOnlyList<string> outputs, IReadOnlyDictionary<string, IReadOnlyList<string>>? combinations = null)
         => WriteBuild(outputs, combinations);
 
@@ -56,9 +66,10 @@ static class MarkdownWriter
         string? tfmsAlias = null;
         if (allComboSets.Count > 1)
         {
-            // Sort by TFM part (before any |rid) alphabetically (OrdinalIgnoreCase), then full combo for determinism.
+            // Sort the TFMs using NuGet.Frameworks for correct semantic ordering
+            // (net8.0 < net9.0 < net10.0, netstandard after, etc.).
             var sorted = allComboSets
-                .OrderBy(c => c.Split('|')[0], StringComparer.OrdinalIgnoreCase)
+                .OrderBy(c => GetTfmKey(c.Split('|')[0]))
                 .ThenBy(c => c, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
             var joined = string.Join("|", sorted);
@@ -263,7 +274,7 @@ static class MarkdownWriter
                     // Singles are emitted with their concrete TFM directory (no parens).
                     string pivotToken = tfmsAlias != null
                         ? $"({tfmsAlias})"
-                        : "(" + string.Join("|", groupTfms.OrderBy(x => x, StringComparer.OrdinalIgnoreCase)) + ")";
+                        : "(" + string.Join("|", groupTfms.OrderBy(x => GetTfmKey(x))) + ")";
 
                     // Replace the first known TFM dir occurrence with the pivot token.
                     foreach (var t in groupTfms)
@@ -447,7 +458,7 @@ static class MarkdownWriter
                 .Select(c => c.Split('|')[0])
                 .Where(t => !string.IsNullOrWhiteSpace(t))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(t => t, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(t => GetTfmKey(t))
                 .ToArray();
 
             if (tfms.Length > 1)

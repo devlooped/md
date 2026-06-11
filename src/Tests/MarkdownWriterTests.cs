@@ -212,9 +212,13 @@ public class MarkdownWriterTests
         Assert.Equal(1, successCount);
 
         // The single line must contain a pivot for the TFMs (either the global #TFMS form or the inline list).
+        // With NuGet.Frameworks sorting we expect net8 before net9 before net10.
         Assert.True(
-            output.Contains("(#TFMS)") || output.Contains("(net10.0|net8.0|net9.0)") || output.Contains("(net"),
+            output.Contains("(#TFMS)") || output.Contains("(net8.0|net9.0|net10.0)") || output.Contains("(net"),
             "Expected a TFM pivot in the (collapsed) path");
+
+        // The #TFMS global (if emitted) or any inline list must be in ascending version order.
+        Assert.False(output.Contains("net10.0|net8.0") || output.Contains("net9.0|net8.0"), "TFMs should be sorted net8 < net9 < net10");
 
         // As a bonus for shortness, the alias token should also appear inside the path on the RHS.
         Assert.Contains("✅#", output);
