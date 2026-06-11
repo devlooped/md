@@ -54,9 +54,13 @@ static class MarkdownWriter
         }
 
         string? tfmsAlias = null;
-        if (allComboSets.Count > 0)
+        if (allComboSets.Count > 1)
         {
-            var sorted = allComboSets.OrderBy(x => x, StringComparer.Ordinal).ToArray();
+            // Sort by TFM part (before any |rid) alphabetically (OrdinalIgnoreCase), then full combo for determinism.
+            var sorted = allComboSets
+                .OrderBy(c => c.Split('|')[0], StringComparer.OrdinalIgnoreCase)
+                .ThenBy(c => c, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
             var joined = string.Join("|", sorted);
             tfmsAlias = aliasTable.AssignGlobal($"#TFMS={joined}");
         }
@@ -253,11 +257,13 @@ static class MarkdownWriter
 
                 string disp = rep;
 
-                if (groupTfms.Count > 0)
+                if (groupTfms.Count > 1)
                 {
+                    // Only parenthesize/pivot when there is more than one TFM for this item.
+                    // Singles are emitted with their concrete TFM directory (no parens).
                     string pivotToken = tfmsAlias != null
                         ? $"({tfmsAlias})"
-                        : "(" + string.Join("|", groupTfms.OrderBy(x => x, StringComparer.Ordinal)) + ")";
+                        : "(" + string.Join("|", groupTfms.OrderBy(x => x, StringComparer.OrdinalIgnoreCase)) + ")";
 
                     // Replace the first known TFM dir occurrence with the pivot token.
                     foreach (var t in groupTfms)
@@ -310,7 +316,15 @@ static class MarkdownWriter
                     builder.AppendLine($"{alias}={dispKey}");
 
                 var combs = proj.Combinations;
-                string suffix = (combs is { Count: > 0 }) ? $" ({string.Join(';', combs)})" : string.Empty;
+                string suffix = string.Empty;
+                if (combs is { Count: > 0 })
+                {
+                    // For a single combo/TFM don't parenthesize; only use (list) when there are multiple.
+                    // The list coming from the reader is already ordered (OrdinalIgnoreCase).
+                    suffix = combs.Count > 1
+                        ? $" ({string.Join(';', combs)})"
+                        : " " + combs[0];
+                }
                 builder.AppendLine($"❌{alias}/{suffix}");
 
                 foreach (var error in proj.Errors)
@@ -433,29 +447,28 @@ static class MarkdownWriter
                 .Select(c => c.Split('|')[0])
                 .Where(t => !string.IsNullOrWhiteSpace(t))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(t => t, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
 
-            if (tfms.Length > 0)
+            if (tfms.Length > 1)
             {
+                // Only emit a parenthesized pivot when >1 TFM. For a single TFM leave the concrete value bare (no parens).
                 // Replace the first occurrence of a /<tfm>/ segment with the pivot form (/#TFMS) or (netX|netY).
-                // We scan a copy of the list so we can try each until one matches.
+                string content = tfmsAlias is not null ? tfmsAlias : string.Join("|", tfms);
+                string pivotToken = $"({content})";
+
                 foreach (var tfm in tfms)
                 {
                     var needle = "/" + tfm + "/";
                     var idx = p.IndexOf(needle, StringComparison.OrdinalIgnoreCase);
                     if (idx >= 0)
                     {
-                        string pivotToken;
-                        if (tfmsAlias is not null)
-                            pivotToken = $"({tfmsAlias})";
-                        else
-                            pivotToken = "(" + string.Join("|", tfms) + ")";
-
                         p = p.Substring(0, idx + 1) + pivotToken + p.Substring(idx + needle.Length - 1);
                         break;
                     }
                 }
             }
+            // else: 0 or 1 => leave the original TFM segment in the path (bare).
         }
 
         return p;

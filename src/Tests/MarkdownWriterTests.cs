@@ -220,4 +220,26 @@ public class MarkdownWriterTests
         Assert.Contains("✅#", output);
         // The line after the alias def should be the one with the arrow + (hopefully) the alias repeated in the path.
     }
+
+    [Fact]
+    public void When_single_tfm_then_no_parentheses_around_tfm_in_path()
+    {
+        var writer = new StringWriter();
+
+        var path = "artifacts/bin/MyProj/Debug/net10.0/MyProj.dll";
+        var combos = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase)
+        {
+            [path] = new[] { "net10.0" },
+        };
+
+        MarkdownWriter.WriteBuildSuccess(writer, [path], combos);
+        var output = writer.ToString();
+
+        // Single TFM must appear bare (no surrounding parentheses).
+        Assert.DoesNotContain("(net10.0)", output);
+        Assert.Contains("/net10.0/", output);
+
+        // No unnecessary global #TFMS alias when everything is single-TFM.
+        Assert.DoesNotContain("#TFMS", output);
+    }
 }
