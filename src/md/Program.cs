@@ -74,5 +74,9 @@ static void WriteRootHelp()
 
         Options:
           --version  Show md tool version information
+
+        Output:
+          Uses ✅ (success), ❌ (failure), ⏩ (skipped) icons to indicate outcome, 
+          and #ALIAS aliases to shorten project names and file paths.
         """);
 }
