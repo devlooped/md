@@ -3,11 +3,14 @@ obj
 out
 artifacts
 pack
+agent-tools
+terminals
 TestResults
 results
 BenchmarkDotNet.Artifacts
+mcps
 /app
-/mcps
+/temp
 .vs
 .vscode
 .genaiscript
@@ -27,14 +30,10 @@ local.settings.json
 *.log
 *.cache
 *.binlog
-!src/Tests/Fixtures/**/*.binlog
 *.zip
 __azurite*.*
 AzuriteConfig
 __*__
-
-agent-tools/
-terminals/
 
 .nuget
 *.lock.json
